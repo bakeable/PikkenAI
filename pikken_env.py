@@ -108,6 +108,7 @@ class PikkenEnv(gym.Env):
     
     def finish_round(self):
         """Finish the current round and reset state."""
+        print(f"\n=== Round {self.round_count} Finished ===")
         # Remove dice based on bluff call outcome
         if self._is_valid_bid(self.current_bid):
             # Bid was truthful, bidder and supporters lose a die
@@ -129,6 +130,7 @@ class PikkenEnv(gym.Env):
         self.phase = "bidding"
         self.support_votes = {}
         self.bluff_target = {"bidder": -1, "challenger": -1}
+        print(f"\nStarting Round {self.round_count} with {self.num_players} players and {self._get_dice_left()} dice left...")
 
     
     def step(self, action: int) -> Tuple[Dict[int, Any], Dict[int, float], Dict[int, bool], Dict[int, Dict]]:
@@ -263,6 +265,7 @@ class PikkenEnv(gym.Env):
     def _handle_call_bluff(self) -> Tuple[float, bool]:
         """Handle call bluff action."""
         if self.current_bid == (0, 0):
+            print(f"Player {self.current_player} tried to call bluff with no bid")
             return -10.0, False  # Can't call bluff on first move
         
         self.phase = "supporting"
@@ -297,6 +300,7 @@ class PikkenEnv(gym.Env):
     def _handle_support(self, action: int) -> Tuple[float, bool]:
         """Handle support action during bluff call."""
         if action not in [0, 1]:
+            print(f"Player {self.current_player} made invalid support action: {action}")
             return -1.0, False # Invalid support action
         
         self.support_votes[self.current_player] = "bidder" if action == 0 else "challenger"
@@ -310,10 +314,10 @@ class PikkenEnv(gym.Env):
     
     def _is_valid_raise(self, new_bid: Tuple[int, int]) -> bool:
         """Check if new bid is higher than current bid."""
+        if new_bid[0] > self._get_dice_left():
+            return False  # Can't bid more than total dice left
+        
         if self.current_bid == (0, 0):
-            if new_bid[0] > self._get_dice_left():
-                return False  # Can't bid more than total dice left
-            
             return True # Any other bid is valid if no current bid
         
         curr_qty, curr_face = self.current_bid
@@ -402,7 +406,9 @@ class PikkenEnv(gym.Env):
         dice_left = 0
         for i, alive in enumerate(self.players_alive):
             if alive:
-                dice_left += len(self.players_dice[i])
+                for die in self.players_dice[i]:
+                    if die > 0:
+                        dice_left += 1
 
         return dice_left
     

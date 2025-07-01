@@ -72,7 +72,7 @@ class SingleAgentWrapper(gym.Env):
         rl_truncated = False
         
         # Keep trying until we get a valid action
-        max_retries = 10000
+        max_retries = 1000
         for attempt in range(max_retries):
             obs, rewards, terminated, info = self.base_env.step(action)
             
