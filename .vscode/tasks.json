@@ -1,0 +1,70 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Setup Pikken AI",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"setup.py"
+			],
+			"group": "build",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test Setup",
+			"type": "shell",
+			"command": "python",
+			"args": ["test_setup.py"],
+			"group": "test",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Quick Evaluation",
+			"type": "shell",
+			"command": "python",
+			"args": ["evaluate.py", "--games", "50"],
+			"group": "test",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Train Agent (Quick)",
+			"type": "shell",
+			"command": "python",
+			"args": ["train.py", "--timesteps", "10000"],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Train Agent (Full)",
+			"type": "shell",
+			"command": "python",
+			"args": ["train.py", "--timesteps", "100000", "--plot"],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Evaluate Trained Agent",
+			"type": "shell",
+			"command": "python",
+			"args": ["evaluate.py", "--model-path", "./models/pikken_agent", "--games", "200", "--plot"],
+			"group": "test",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start TensorBoard",
+			"type": "shell",
+			"command": "tensorboard",
+			"args": ["--logdir", "./tensorboard_logs/"],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}
