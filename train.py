@@ -66,13 +66,56 @@ class SingleAgentWrapper(gym.Env):
         return rl_obs, rl_info
     
     def step(self, action):
-        # Execute RL agent's action
-        obs, rewards, terminated, info = self.base_env.step(action)
+        # Handle RL agent's action with retry mechanism for invalid actions
+        rl_reward = 0.0
+        rl_terminated = False
+        rl_truncated = False
         
-        # Get RL agent's reward and termination status
-        rl_reward = rewards.get(0, 0.0) if isinstance(rewards, dict) else rewards
+        # Keep trying until we get a valid action
+        max_retries = 10000
+        for attempt in range(max_retries):
+            obs, rewards, terminated, info = self.base_env.step(action)
+            
+            # Get RL agent's info to check if action was invalid
+            rl_info = info.get(0, info) if isinstance(info, dict) else info
+            
+            # Check if the action was invalid
+            if rl_info.get('invalid_action', False):
+                # Accumulate penalty for invalid action
+                penalty = rewards.get(0, 0.0) if isinstance(rewards, dict) else rewards
+                rl_reward += penalty  # This should be negative
+                
+                # Only print debug every 100 attempts or at the end
+                if attempt % 100 == 0 or attempt >= max_retries - 1:
+                    print(f"  RL agent invalid action attempt {attempt + 1}/{max_retries}, penalty: {penalty}")
+                
+                # If we've reached max retries, force a valid action
+                if attempt >= max_retries - 1:
+                    valid_actions = rl_info.get('valid_actions', [0])
+                    action = valid_actions[0] if valid_actions else 0
+                    print(f"  Forcing valid action: {action}")
+                    continue
+                
+                # Get a new action from the agent for retry
+                rl_obs = obs.get(0, obs) if isinstance(obs, dict) else obs
+                valid_actions = rl_info.get('valid_actions', list(range(42)))
+                
+                # Force the agent to choose a valid action
+                if hasattr(self, '_last_rl_obs'):
+                    # Use action masking to get a valid action
+                    import random
+                    action = random.choice(valid_actions)
+                else:
+                    action = valid_actions[0] if valid_actions else 0
+                continue
+            else:
+                # Valid action - add any reward and break out of retry loop
+                step_reward = rewards.get(0, 0.0) if isinstance(rewards, dict) else rewards
+                rl_reward += step_reward
+                break
+        
+        # Get final RL agent state
         rl_terminated = terminated.get(0, False) if isinstance(terminated, dict) else terminated
-        rl_truncated = False  # PikkenEnv doesn't use truncated
         rl_obs = obs.get(0, obs) if isinstance(obs, dict) else obs
         rl_info = info.get(0, info) if isinstance(info, dict) else info
         
@@ -92,9 +135,10 @@ class SingleAgentWrapper(gym.Env):
             # Check if game ended
             if any(terminated.values() if isinstance(terminated, dict) else [terminated]):
                 rl_terminated = terminated.get(0, False) if isinstance(terminated, dict) else terminated
-                # Add final reward if RL agent won
-                if sum(self.base_env.players_alive) <= 1 and self.base_env.players_alive[0]:
-                    rl_reward += 10.0
+                # Check if RL agent won by reaching 0 dice
+                if len(self.base_env.players_dice[0]) == 0:
+                    rl_reward += 100.0  # Big win bonus
+                    print("RL Agent WON by reaching 0 dice!")
                 break
         
         return rl_obs, rl_reward, rl_terminated, rl_truncated, rl_info

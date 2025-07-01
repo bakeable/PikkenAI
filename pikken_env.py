@@ -11,7 +11,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 import random
 
-from constants import MAX_DICE, MAX_FACE, MAX_PLAYERS
+from constants import MAX_ACTIONS, MAX_DICE, MAX_FACE, MAX_PLAYERS
 
 
 class PikkenEnv(gym.Env):
@@ -111,15 +111,15 @@ class PikkenEnv(gym.Env):
         # Remove dice based on bluff call outcome
         if self._is_valid_bid(self.current_bid):
             # Bid was truthful, bidder and supporters lose a die
-            self._remove_die(self.bluff_target["bidder"])
             for player in self.support_votes:
                 if self.support_votes[player] == "bidder":
+                    print(f"Player {player} was correct in bid, removing die")
                     self._remove_die(player)
         else:
             # Bid was wrong, challenger and supporters lose a die
-            self._remove_die(self.bluff_target["challenger"])
             for player in self.support_votes:
                 if self.support_votes[player] == "challenger":
+                    print(f"Player {player} was correct in challenge, removing die")
                     self._remove_die(player)
 
         # Reset round state
@@ -156,16 +156,36 @@ class PikkenEnv(gym.Env):
             else:
                 reward, step_valid = self._handle_bid(action)
 
+        # Handle invalid actions
+        if not step_valid:
+            # Invalid action: player loses a die and gets heavily penalized
+            print(f"Player {agent_id} made invalid action")
+            reward = -10.0  # Heavy penalty
+
         if len(self.support_votes) >= sum(self.players_alive):
             self.finish_round()
 
-        alive_count = sum(self.players_alive)
-        if alive_count <= 1:
+        # Check for winner: first player to reach 0 dice wins
+        winner = None
+        for player_idx in range(self.num_players):
+            if len(self.players_dice[player_idx]) == 0:
+                winner = player_idx
+                break
+                
+        if winner is not None:
             terminated = True
-            if self.players_alive[agent_id]:
-                reward += 10.0
+            if agent_id == winner:
+                reward += 100.0  # Big reward for winning!
+                print(f"Player {agent_id} WINS the game!")
+            else:
+                reward -= 10.0   # Penalty for losing
+                print(f"Player {agent_id} loses to player {winner}")
 
-        self._next_player()
+        # Only advance to next player if the action was valid or player was eliminated
+        if step_valid:
+            self._next_player()
+
+        # If invalid and player still alive, they get another chance but with penalty
         observations = {agent: self._get_observation() for agent in range(self.num_players)}
         rewards = {agent: (reward if agent == agent_id else 0.0) for agent in range(self.num_players)}
         terminations = {agent: terminated for agent in range(self.num_players)}
@@ -235,21 +255,15 @@ class PikkenEnv(gym.Env):
             'players_alive': self.players_alive.copy(),
             'current_bid': self.current_bid,
             'round_count': self.round_count,
-            'total_dice': sum(len(dice) for dice in self.players_dice if dice)
+            'total_dice': sum(len(dice) for dice in self.players_dice if dice),
+            'valid_actions': self._get_valid_actions()
         }
+    
     
     def _handle_call_bluff(self) -> Tuple[float, bool]:
         """Handle call bluff action."""
         if self.current_bid == (0, 0):
-            return -1.0, False  # Can't call bluff on first move
-        
-        # Determine if call bluff is successful
-        if self._is_valid_bid(self.current_bid):
-            # Bid was truthful, calling bluff was a mistake
-            reward = -1.0
-        else:
-            # Bid was wrong, calling bluff was correct
-            reward = 1.0
+            return -10.0, False  # Can't call bluff on first move
         
         self.phase = "supporting"
         self.bluff_target["bidder"] = self._get_previous_player()
@@ -258,14 +272,14 @@ class PikkenEnv(gym.Env):
             self._get_previous_player(): "bidder",
             self.current_player: "challenger",
         }
-        return reward, True # Small reward for valid action
+        print(f"Player {self.current_player} calls bluff on player {self.bluff_target['bidder']} with bid {self.current_bid}")
+
+        return 0.1, True # Small reward for valid action
     
     def _handle_bid(self, action: int) -> Tuple[float, bool]:
         """Handle bid action."""
         # Convert action to bid
-        bid_index = action - 1
-        quantity = (bid_index // 6) + 1  # 1-6
-        face_value = (bid_index % 6) + 1  # 1-6
+        quantity, face_value = self._action_to_bid(action)
         new_bid = (quantity, face_value)
         print(f"Player {self.current_player} bids: {new_bid}")
         
@@ -290,6 +304,8 @@ class PikkenEnv(gym.Env):
         # Support bidder if action == 0, else support challenger
         bid_truthful = self._is_valid_bid(self.current_bid)
         support_valid = (action == 0 and bid_truthful) or (action == 1 and not bid_truthful)
+
+        print(f"Player {self.current_player} supports {'bidder' if action == 0 else 'challenger'}")
         return (0.1 if support_valid else -1.0), True # Valid support action gives small reward, invalid gives penalty
     
     def _is_valid_raise(self, new_bid: Tuple[int, int]) -> bool:
@@ -351,14 +367,19 @@ class PikkenEnv(gym.Env):
         """Roll specified number of dice."""
         return [random.randint(1, 6) for _ in range(num_dice)]
     
+    
+    
     def _remove_die(self, player_idx: int):
         """Remove a die from specified player."""
         if self.players_dice[player_idx]:
             self.players_dice[player_idx].pop()
+            print(f"Player {player_idx} now has {len(self.players_dice[player_idx])} dice")
             
-        # If player has no dice left, mark as dead
+        # In Pikken: If player has no dice left, they WIN!
+        # Keep them alive until game ends, but they're the winner
         if len(self.players_dice[player_idx]) == 0:
-            self.players_alive[player_idx] = False
+            print(f"Player {player_idx} has reached 0 dice - WINNER!")
+            # Don't mark as dead - they won!
     
     def _next_player(self):
         """Move to next alive player."""
@@ -384,6 +405,50 @@ class PikkenEnv(gym.Env):
                 dice_left += len(self.players_dice[i])
 
         return dice_left
+    
+    def _get_valid_actions(self) -> list:
+        """Get list of valid actions for current player."""
+        valid_actions = []
+        
+        # Call bluff is always valid (except on first move)
+        if self.current_bid != (0, 0):
+            valid_actions.append(0)
+        
+        # Check which bid actions are valid
+        for action in range(1, MAX_ACTIONS):
+            quantity, face_value = self._action_to_bid(action)
+            if quantity > 0 and face_value > 0:  # Valid bid format
+                new_bid = (quantity, face_value)
+                if self._is_valid_raise(new_bid):
+                    valid_actions.append(action)
+        
+        # If no valid actions, allow call bluff as fallback
+        if not valid_actions:
+            valid_actions.append(0)
+            
+        return valid_actions
+    
+    def _action_to_bid(self, action: int) -> Tuple[int, int]:
+        """Convert action number to (quantity, face_value) bid."""
+        if action == 0:
+            return (0, 0)  # Call bluff
+        
+        # Map action 1-180 to bid combinations
+        # Each combination represents (quantity, face_value)
+        # where quantity ranges from 1 to MAX_PLAYERS*MAX_DICE (30)
+        # and face_value ranges from 1 to 6
+        action_idx = action - 1
+        max_quantity = MAX_PLAYERS * MAX_DICE
+        
+        # Calculate quantity (1 to 30) and face_value (1 to 6)
+        quantity = (action_idx // MAX_FACE) + 1
+        face_value = (action_idx % MAX_FACE) + 1
+        
+        # Ensure we don't exceed max possible quantity
+        if quantity > max_quantity:
+            quantity = max_quantity
+            
+        return (quantity, face_value)
     
     def render(self, mode: str = 'human') -> Optional[str]:
         """Render the current game state."""

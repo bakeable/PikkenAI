@@ -4,6 +4,8 @@ Reinforcement Learning agent for Pikken AI using Stable Baselines3.
 
 from typing import Any, Dict, Optional
 import numpy as np
+
+from constants import MAX_ACTIONS
 from .base_agent import BaseAgent
 
 try:
@@ -33,19 +35,20 @@ class RLAgent(BaseAgent):
     
     def decide_action(self, observation: Dict[str, np.ndarray], info: Dict[str, Any]) -> int:
         """
-        Use trained model to decide action.
+        Use trained model to decide action with action masking.
         
         Args:
             observation: Current game state (structured dict)
-            info: Game information
+            info: Game information including valid_actions
             
         Returns:
-            Model-predicted action
+            Model-predicted action (guaranteed to be valid)
         """
         if self.model is None:
-            # Fallback to random action if no model loaded
+            # Fallback to random valid action if no model loaded
+            valid_actions = info.get('valid_actions', [0])
             import random
-            return random.randint(0, 41)
+            return random.choice(valid_actions)
         
         # Convert structured observation to format expected by model
         if isinstance(observation, dict):
@@ -54,7 +57,61 @@ class RLAgent(BaseAgent):
         else:
             obs_array = observation
         
-        action, _ = self.model.predict(obs_array, deterministic=False)
+        # Get valid actions from info
+        valid_actions = info.get('valid_actions', list(range(MAX_ACTIONS)))
+        
+        # Use action masking to only select valid actions
+        return self._predict_with_action_mask(obs_array, valid_actions)
+    
+    def _predict_with_action_mask(self, obs_array: np.ndarray, valid_actions: list) -> int:
+        """
+        Predict action using the model with action masking.
+        
+        Args:
+            obs_array: Flattened observation
+            valid_actions: List of valid action indices
+            
+        Returns:
+            Valid action selected by the model
+        """
+        if len(valid_actions) == 1:
+            # Only one valid action, return it
+            return valid_actions[0]
+        
+        try:
+            import torch
+            
+            # Convert numpy array to torch tensor with correct shape and device
+            obs_tensor = torch.FloatTensor(obs_array).unsqueeze(0)  # Add batch dimension
+            
+            # Move to same device as model if needed
+            if hasattr(self.model.policy, 'device'):
+                obs_tensor = obs_tensor.to(self.model.policy.device)
+            
+            # Get action probabilities from the model
+            with torch.no_grad():
+                action_probs = self.model.policy.get_distribution(obs_tensor).distribution.probs.squeeze().cpu().numpy()
+            
+            # Mask invalid actions by setting their probabilities to 0
+            masked_probs = np.zeros_like(action_probs)
+            for action in valid_actions:
+                if action < len(masked_probs):
+                    masked_probs[action] = action_probs[action]
+            
+            # Renormalize probabilities
+            if masked_probs.sum() > 0:
+                masked_probs = masked_probs / masked_probs.sum()
+                # Sample from the masked distribution
+                action = np.random.choice(len(masked_probs), p=masked_probs)
+            else:
+                # Fallback: choose randomly from valid actions
+                action = np.random.choice(valid_actions)
+                
+        except Exception as e:
+            # Fallback to simple approach if anything fails
+            print(f"Warning: Action masking failed ({e}), using fallback")
+            action = np.random.choice(valid_actions)
+        
         return int(action)
     
     def _flatten_observation(self, obs_dict: Dict[str, np.ndarray]) -> np.ndarray:
@@ -127,3 +184,35 @@ class RLAgent(BaseAgent):
         """Load a pre-trained model."""
         self.model = PPO.load(path)
         self.model_path = path
+    
+    def _predict_simple(self, obs_array: np.ndarray, valid_actions: list) -> int:
+        """
+        Simple prediction with action masking - just uses model.predict() 
+        and validates the result.
+        
+        Args:
+            obs_array: Flattened observation
+            valid_actions: List of valid action indices
+            
+        Returns:
+            Valid action selected by the model
+        """
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            action, _ = self.model.predict(obs_array, deterministic=False)
+            action = int(action)
+            
+            if action in valid_actions:
+                return action
+            
+            # If invalid action selected, try a few more times
+            if attempt < max_attempts - 1:
+                continue
+            else:
+                # Final fallback: choose randomly from valid actions
+                import random
+                return random.choice(valid_actions)
+        
+        # Should never reach here, but just in case
+        import random
+        return random.choice(valid_actions)
