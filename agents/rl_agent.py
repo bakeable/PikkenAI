@@ -60,28 +60,36 @@ class RLAgent(BaseAgent):
     def _flatten_observation(self, obs_dict: Dict[str, np.ndarray]) -> np.ndarray:
         """
         Flatten structured observation dict into a single array for the model.
-        This is a simple flattening - could be improved with better feature engineering.
+        Must match the format used during training (exactly 27 dimensions).
         """
         flattened_parts = []
         
-        # Global state
+        # Global state (5 values)
         global_state = obs_dict.get('global_state', np.zeros(5))
-        flattened_parts.append(global_state.flatten())
+        flattened_parts.append(global_state.astype(np.float32))
         
-        # Own dice
+        # Own dice (5 values) 
         own_dice = obs_dict.get('own_dice', np.zeros(5))
-        flattened_parts.append(own_dice.flatten())
+        flattened_parts.append(own_dice.astype(np.float32))
         
-        # Player statuses (flatten and take first 8 values to keep size consistent)
+        # Player statuses (8 values: 4 players x 2 features)
         player_statuses = obs_dict.get('player_statuses', np.zeros((4, 2)))
-        flattened_parts.append(player_statuses.flatten()[:8])
+        flattened_parts.append(player_statuses.flatten()[:8].astype(np.float32))
         
-        # Current bids (take first few bids and flatten)
+        # Current bids (9 values: 3 most recent bids x 3 features)
         current_bids = obs_dict.get('current_bids', np.zeros((12, 3)))
-        flattened_parts.append(current_bids[:3].flatten())  # Last 3 bids
+        recent_bids = current_bids[:3].flatten()[:9]
+        flattened_parts.append(recent_bids.astype(np.float32))
         
-        # Combine all parts
-        return np.concatenate(flattened_parts)
+        # Combine all parts (should be exactly 27 values)
+        result = np.concatenate(flattened_parts)
+        # Ensure exactly 27 features
+        if len(result) < 27:
+            result = np.pad(result, (0, 27 - len(result)), 'constant')
+        elif len(result) > 27:
+            result = result[:27]
+            
+        return result
     
     def create_model(self, env, **kwargs):
         """Create a new PPO model."""
