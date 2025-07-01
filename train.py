@@ -66,60 +66,17 @@ class SingleAgentWrapper(gym.Env):
         return rl_obs, rl_info
     
     def step(self, action):
-        # Handle RL agent's action with retry mechanism for invalid actions
-        rl_reward = 0.0
-        rl_terminated = False
-        rl_truncated = False
+        # Handle RL agent's action directly (no retry loop)
+        obs, rewards, terminated, info = self.base_env.step(action)
         
-        # Keep trying until we get a valid action
-        max_retries = 1000
-        for attempt in range(max_retries):
-            obs, rewards, terminated, info = self.base_env.step(action)
-            
-            # Get RL agent's info to check if action was invalid
-            rl_info = info.get(0, info) if isinstance(info, dict) else info
-            
-            # Check if the action was invalid
-            if rl_info.get('invalid_action', False):
-                # Accumulate penalty for invalid action
-                penalty = rewards.get(0, 0.0) if isinstance(rewards, dict) else rewards
-                rl_reward += penalty  # This should be negative
-                
-                # Only print debug every 100 attempts or at the end
-                if attempt % 100 == 0 or attempt >= max_retries - 1:
-                    print(f"  RL agent invalid action attempt {attempt + 1}/{max_retries}, penalty: {penalty}")
-                
-                # If we've reached max retries, force a valid action
-                if attempt >= max_retries - 1:
-                    valid_actions = rl_info.get('valid_actions', [0])
-                    action = valid_actions[0] if valid_actions else 0
-                    print(f"  Forcing valid action: {action}")
-                    continue
-                
-                # Get a new action from the agent for retry
-                rl_obs = obs.get(0, obs) if isinstance(obs, dict) else obs
-                valid_actions = rl_info.get('valid_actions', list(range(42)))
-                
-                # Force the agent to choose a valid action
-                if hasattr(self, '_last_rl_obs'):
-                    # Use action masking to get a valid action
-                    import random
-                    action = random.choice(valid_actions)
-                else:
-                    action = valid_actions[0] if valid_actions else 0
-                continue
-            else:
-                # Valid action - add any reward and break out of retry loop
-                step_reward = rewards.get(0, 0.0) if isinstance(rewards, dict) else rewards
-                rl_reward += step_reward
-                break
-        
-        # Get final RL agent state
+        # Get RL agent's info and reward
+        rl_info = info.get(0, info) if isinstance(info, dict) else info
+        rl_reward = rewards.get(0, 0.0) if isinstance(rewards, dict) else rewards
         rl_terminated = terminated.get(0, False) if isinstance(terminated, dict) else terminated
         rl_obs = obs.get(0, obs) if isinstance(obs, dict) else obs
-        rl_info = info.get(0, info) if isinstance(info, dict) else info
+        rl_truncated = False
         
-        # Handle opponent turns
+        # Handle opponent turns (only if RL agent's action was valid and game continues)
         while (not rl_terminated and not rl_truncated and 
                self.base_env.current_player != 0 and 
                sum(self.base_env.players_alive) > 1):
@@ -137,7 +94,7 @@ class SingleAgentWrapper(gym.Env):
                 rl_terminated = terminated.get(0, False) if isinstance(terminated, dict) else terminated
                 # Check if RL agent won by reaching 0 dice
                 if len(self.base_env.players_dice[0]) == 0:
-                    rl_reward += 100.0  # Big win bonus
+                    rl_reward += 50.0  # Big win bonus
                     print("RL Agent WON by reaching 0 dice!")
                 break
         
@@ -183,6 +140,7 @@ def create_training_environment(num_players: int = 4) -> DummyVecEnv:
         HeuristicAgent("Heuristic2", aggressiveness=0.4),
         HeuristicAgent("Heuristic3", aggressiveness=0.6),
         HeuristicAgent("Heuristic4", aggressiveness=0.75),
+        HeuristicAgent("Heuristic5", aggressiveness=0.9),
     ]
     
     def make_env():

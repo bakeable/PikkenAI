@@ -100,6 +100,8 @@ class PikkenEnv(gym.Env):
         self.phase = "bidding"
         self.support_votes = {}
         self.bluff_target = {"bidder": -1, "challenger": -1}
+        self._prev_dice_count = {i: len(self.players_dice[i]) for i in range(self.num_players)}
+        self._consecutive_invalid = {i: 0 for i in range(self.num_players)}
         
         observation = self._get_observation()
         info = self._get_info()
@@ -160,9 +162,27 @@ class PikkenEnv(gym.Env):
 
         # Handle invalid actions
         if not step_valid:
-            # Invalid action: player loses a die and gets heavily penalized
-            print(f"Player {agent_id} made invalid action")
-            reward = -10.0  # Heavy penalty
+            # Invalid action: give moderate penalty but allow learning
+            print(f"Player {agent_id} made invalid action {action}")
+            reward = -1.0  # Moderate penalty instead of -10.0
+            
+            # SAFETY: If this is the 3rd+ consecutive invalid action by this player,
+            # force advancement to prevent infinite loops
+            if not hasattr(self, '_consecutive_invalid'):
+                self._consecutive_invalid = {}
+            self._consecutive_invalid[agent_id] = self._consecutive_invalid.get(agent_id, 0) + 1
+            
+            if self._consecutive_invalid[agent_id] >= 100:
+                print(f"SAFETY: Player {agent_id} had 100+ invalid actions, forcing advancement")
+                raise ValueError(f"Player {agent_id} made too many invalid actions")
+        else:
+            # Reset invalid action counter on valid action
+            if hasattr(self, '_consecutive_invalid'):
+                self._consecutive_invalid[agent_id] = 0
+
+        # Give small positive reward for making valid moves
+        if step_valid and not terminated:
+            reward += 0.05  # Small reward for valid actions
 
         if len(self.support_votes) >= sum(self.players_alive):
             self.finish_round()
@@ -177,17 +197,28 @@ class PikkenEnv(gym.Env):
         if winner is not None:
             terminated = True
             if agent_id == winner:
-                reward += 100.0  # Big reward for winning!
+                reward += 50.0  # Big reward for winning!
                 print(f"Player {agent_id} WINS the game!")
             else:
-                reward -= 10.0   # Penalty for losing
+                reward -= 2.0   # Small penalty for losing
                 print(f"Player {agent_id} loses to player {winner}")
 
-        # Only advance to next player if the action was valid or player was eliminated
+        # Reward for losing dice (getting closer to winning in Pikken)
+        current_dice = len(self.players_dice[agent_id])
+        if hasattr(self, '_prev_dice_count'):
+            prev_dice = self._prev_dice_count.get(agent_id, current_dice)
+            if current_dice < prev_dice:
+                reward += 5.0  # Reward for losing a die (progress toward winning)
+                print(f"Player {agent_id} lost a die - closer to winning!")
+        
+        # Update dice count tracking
+        if not hasattr(self, '_prev_dice_count'):
+            self._prev_dice_count = {}
+        self._prev_dice_count[agent_id] = current_dice
+
+        # Only advance to next player if the action was valid
         if step_valid:
             self._next_player()
-
-        # If invalid and player still alive, they get another chance but with penalty
         observations = {agent: self._get_observation() for agent in range(self.num_players)}
         rewards = {agent: (reward if agent == agent_id else 0.0) for agent in range(self.num_players)}
         terminations = {agent: terminated for agent in range(self.num_players)}
@@ -221,7 +252,7 @@ class PikkenEnv(gym.Env):
         player_statuses = np.zeros((self.num_players, 2), dtype=np.int32)
         for idx in range(self.num_players):
             player_statuses[idx][0] = idx
-            player_statuses[idx][1] = len(self.players_dice[idx])
+            player_statuses[idx][1] = sum(1 for die in self.players_dice[idx] if die > 0)
 
         # Current bids (this round only)
         current_bids = np.full((12, 3), -1, dtype=np.int32)
@@ -257,7 +288,7 @@ class PikkenEnv(gym.Env):
             'players_alive': self.players_alive.copy(),
             'current_bid': self.current_bid,
             'round_count': self.round_count,
-            'total_dice': sum(len(dice) for dice in self.players_dice if dice),
+            'total_dice': sum(sum(1 for die in player_dice if die > 0) for player_dice in self.players_dice),
             'valid_actions': self._get_valid_actions()
         }
     
@@ -277,7 +308,7 @@ class PikkenEnv(gym.Env):
         }
         print(f"Player {self.current_player} calls bluff on player {self.bluff_target['bidder']} with bid {self.current_bid}")
 
-        return 0.1, True # Small reward for valid action
+        return 0.2, True # Slightly better reward for valid call bluff action
     
     def _handle_bid(self, action: int) -> Tuple[float, bool]:
         """Handle bid action."""
@@ -295,7 +326,7 @@ class PikkenEnv(gym.Env):
         self.bid_history.append((self.current_player, quantity, face_value))
         turn_number = len([b for b in self.structured_bid_history if b[0] == self.round_count])
         self.structured_bid_history.append((self.round_count, turn_number, self.current_player, quantity, face_value))
-        return 0.1, True  # Small reward for valid action
+        return 0.15, True  # Slightly better reward for valid bid action
     
     def _handle_support(self, action: int) -> Tuple[float, bool]:
         """Handle support action during bluff call."""
@@ -310,7 +341,7 @@ class PikkenEnv(gym.Env):
         support_valid = (action == 0 and bid_truthful) or (action == 1 and not bid_truthful)
 
         print(f"Player {self.current_player} supports {'bidder' if action == 0 else 'challenger'}")
-        return (0.1 if support_valid else -1.0), True # Valid support action gives small reward, invalid gives penalty
+        return (0.3 if support_valid else -0.5), True # Better reward for correct support, smaller penalty for wrong support
     
     def _is_valid_raise(self, new_bid: Tuple[int, int]) -> bool:
         """Check if new bid is higher than current bid."""
@@ -416,21 +447,31 @@ class PikkenEnv(gym.Env):
         """Get list of valid actions for current player."""
         valid_actions = []
         
-        # Call bluff is always valid (except on first move)
-        if self.current_bid != (0, 0):
-            valid_actions.append(0)
-        
-        # Check which bid actions are valid
-        for action in range(1, MAX_ACTIONS):
-            quantity, face_value = self._action_to_bid(action)
-            if quantity > 0 and face_value > 0:  # Valid bid format
-                new_bid = (quantity, face_value)
-                if self._is_valid_raise(new_bid):
-                    valid_actions.append(action)
-        
-        # If no valid actions, allow call bluff as fallback
-        if not valid_actions:
-            valid_actions.append(0)
+        if self.phase == "supporting":
+            # During support phase, only support actions are valid
+            valid_actions = [0, 1]  # 0 = support bidder, 1 = support challenger
+        else:
+            # During bidding phase
+            # Call bluff is valid ONLY if there's a current bid to challenge
+            if self.current_bid != (0, 0):
+                valid_actions.append(0)
+            
+            # Check which bid actions are valid
+            for action in range(1, MAX_ACTIONS):
+                quantity, face_value = self._action_to_bid(action)
+                if quantity > 0 and face_value > 0:  # Valid bid format
+                    new_bid = (quantity, face_value)
+                    if self._is_valid_raise(new_bid):
+                        valid_actions.append(action)
+            
+            # Ensure we always have at least one valid action
+            # If it's the first move and no valid bids, force action 1 (smallest bid)
+            if not valid_actions and self.current_bid == (0, 0):
+                valid_actions.append(1)  # Force first player to make a bid
+            
+            # If still no valid actions, allow call bluff as last resort
+            if not valid_actions:
+                valid_actions.append(0)
             
         return valid_actions
     

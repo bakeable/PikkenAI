@@ -209,10 +209,11 @@ def create_agent_lineup(rl_model_path: str = None) -> List:
     
     # Add diverse opponent agents
     agents.extend([
-        RandomAgent("Random"),
+        HeuristicAgent("VeryConservative", aggressiveness=0.1),
         HeuristicAgent("Conservative", aggressiveness=0.2),
         HeuristicAgent("Moderate", aggressiveness=0.5),
-        HeuristicAgent("Aggressive", aggressiveness=0.8)
+        HeuristicAgent("Aggressive", aggressiveness=0.8),
+        RandomAgent("Random"),
     ])
     
     return agents
